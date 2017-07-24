@@ -13,29 +13,19 @@ import SwiftyJSON
 class ViewController: UIViewController, GCDAsyncSocketDelegate {
     
     let cluster = ["192.168.10.57", "192.168.10.58", "192.168.10.60"]
-    var tcpSendSocket: GCDAsyncSocket?
-    var tcpReceiveSocket: GCDAsyncSocket?
+    var sendSockets = [String : GCDAsyncSocket]()
+    var receiveSockets = [String : GCDAsyncSocket]()
     
     @IBOutlet weak var sendButton: UIButton!
     @IBOutlet weak var messageTextView: UITextView!
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        // Do any additional setup after loading the view, typically from a nib.
-        let sendSocketQueue = DispatchQueue.init(label: "send")
-        tcpSendSocket = GCDAsyncSocket(delegate: self, delegateQueue: sendSocketQueue)
-        let receiveSocketQueue = DispatchQueue.init(label: "recv")
-        tcpReceiveSocket = GCDAsyncSocket(delegate: self, delegateQueue: receiveSocketQueue)
-//        tcpSocket = GCDAsyncSocket(delegate: self, delegateQueue: DispatchQueue.main)
         
-        do {
-            try tcpReceiveSocket?.accept(onPort: 20011)
-        } catch {
-            print(error)
-        }
-        receiveMessages()
-        
+        createSockets()
     }
+    
+    // MARK: UI
 
     @IBAction func touchSendButton(_ sender: Any) {
         for server in cluster {
@@ -46,38 +36,70 @@ class ViewController: UIViewController, GCDAsyncSocketDelegate {
         }
     }
     
+    // MARK: Sockets
+    
+    func createSockets() {
+        for peer in cluster {
+            if (peer == getIFAddresses()[1]) {
+                continue
+            }
+            
+            let sendSocketQueue = DispatchQueue.init(label: "send" + peer)
+            sendSockets[peer] = GCDAsyncSocket(delegate: self, delegateQueue: sendSocketQueue)
+            let recvSocketQueue = DispatchQueue.init(label: "recv" + peer)
+            receiveSockets[peer] = GCDAsyncSocket(delegate: self, delegateQueue: recvSocketQueue)
+            
+            do {
+                try receiveSockets[peer]?.accept(onPort: 20011)
+            } catch {
+                print(error)
+            }
+            receiveMessages(ip: peer)
+        }
+    }
+    
     func socket(_ sock: GCDAsyncSocket, didConnectToHost host: String, port: UInt16) {
         print("Connected to: " + host + " " + port.description)
     }
     
     func socket(_ sock: GCDAsyncSocket, didWriteDataWithTag tag: Int) {
-        print("WROTEE")
+        print("Finished writing data")
     }
     
     func socket(_ sock: GCDAsyncSocket, didAcceptNewSocket newSocket: GCDAsyncSocket) {
-        print("WHAT")
-        tcpReceiveSocket = newSocket
-        receiveMessages()
+        print("Received socket connection")
+        guard let ip = newSocket.connectedHost else {
+            print("Socket not connected")
+            return
+        }
+        print(ip)
+        receiveSockets[ip] = newSocket
+        receiveMessages(ip: ip)
     }
     
     func socket(_ sock: GCDAsyncSocket, didRead data: Data, withTag tag: Int) {
         let receiveJson = JSON(data: data)
         print(receiveJson)
-        print("READ!")
+        print("Read message")
         if (receiveJson["type"].stringValue == "message") {
             DispatchQueue.main.async {
                 self.messageTextView.text = self.messageTextView.text + receiveJson["message"].stringValue
             }
-            receiveMessages()
+            guard let socketIp = sock.connectedHost else {
+                print("Socket has no connected host")
+                return
+            }
+            receiveMessages(ip: socketIp)
         }
     }
 
     func sendMessage(server: String) {
         do {
-            try tcpSendSocket?.connect(toHost: server, onPort: 20011)
+            try sendSockets[server]?.connect(toHost: server, onPort: 20011)
         } catch {
             print(error)
         }
+        
         let sendJson: JSON = [
             "type": "message",
             "message": "Some stuff"
@@ -88,14 +110,14 @@ class ViewController: UIViewController, GCDAsyncSocketDelegate {
             return
         }
         
-        tcpSendSocket?.write(sendData, withTimeout: -1, tag: 0)
+        sendSockets[server]?.write(sendData, withTimeout: -1, tag: 0)
     }
 
-    func receiveMessages() {
-        //        DispatchQueue.main.async {
-        tcpReceiveSocket?.readData(withTimeout: -1, tag: 0)
-        //        }
+    func receiveMessages(ip: String) {
+        receiveSockets[ip]?.readData(withTimeout: -1, tag: 0)
     }
+    
+    // MARK: Helper to get self IP
     
     func getIFAddresses() -> [String] {
         var addresses = [String]()
